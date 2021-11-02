@@ -1,82 +1,57 @@
 const fetch = require('node-fetch');
-const Discord = require('discord.js');
-const { openseaEventsUrl } = require('../config.json');
+const {
+  openseaAssetUrl
+} = require('../config.json');
 
-var listingCache = [];
-var lastTimestamp = null;
+const Discord = require('discord.js');
 
 module.exports = {
-  name: 'listing',
-  description: 'listing bot',
-  interval: 30000,
-  enabled: process.env.DISCORD_LISTING_CHANNEL_ID != null,
-  async execute(client) {
-    if (lastTimestamp == null) {
-      lastTimestamp = Math.floor(Date.now()/1000) - 120;
-    } else {
-      lastTimestamp -= 30;
+  name: process.env.DISCORD_TOKEN_COMMAND || "token",
+  execute(message, args) {
+    if (!args.length) {
+      return message.channel.send(`You must provide a Token ID.`);
     }
-    let newTimestamp = Math.floor(Date.now()/1000) - 30;
-    // we're retrieving events from -90 to -30 seconds ago each time, and each query overlaps the previous query by 30 seconds
-    // doing this to try to resolve some intermittent issues with events being missed by the bot, suspect it's due to OpenSea api being slow to update the events data
-    // duplicate events are filtered out by the listingCache array
 
-    let offset = 0;
-    let settings = { 
+    if (isNaN(parseInt(args[0]))) {
+      return message.channel.send(`Token ID must be a number.`);
+    }
+
+    let url = `${openseaAssetUrl}/${process.env.CONTRACT_ADDRESS}/${args[0]}`;
+    let settings = {
       method: "GET",
       headers: {
         "X-API-KEY": process.env.OPEN_SEA_API_KEY
       }
     };
-    while(1)
-    {
-      let url = `${openseaEventsUrl}?collection_slug=${process.env.OPEN_SEA_COLLECTION_NAME}&event_type=created&only_opensea=false&offset=${offset}&limit=50&occurred_after=${lastTimestamp}&occurred_before=${newTimestamp}`;
-      try {
-        var res = await fetch(url, settings);
+
+    fetch(url, settings)
+      .then(res => {
+        if (res.status == 404 || res.status == 400) {
+          throw new Error("[Error] Token ID does not exist.");
+        }
         if (res.status != 200) {
-          throw new Error(`Couldn't retrieve events: ${res.statusText}`);
+          throw new Error(`[Error] Failure to retrieve Token Metadata: ${res.statusText}`);
         }
-
-        let data = await res.json();
-        if (data.asset_events.length == 0) {
-          break;
-        }
-
-        data.asset_events.forEach(function(event) {
-          if (event.asset) {
-            if (listingCache.includes(event.id)) {
-              return;
-            } else {
-              listingCache.push(event.id);
-              if (listingCache.length > 200) listingCache.shift();
-            }
-
-            const embedMsg = new Discord.MessageEmbed()
-              .setColor('#0099ff')
-              .setAuthor('KotJ Sales', 'https://lh3.googleusercontent.com/WXzAeH_YAXvO1JSStHhMGmVAZPPSseKtkNksZ87WZ9UUybFBzYDNV9hTBAoM7bvy16lMLan5YG0cBTHyWN1KfGAANAb0sV9Riyw-CQM=s130', 'https://opensea.io/collection/the-king-of-the-jungle')
-              .setTitle(event.asset.name)
-              .setURL(event.asset.permalink)
-              .setDescription(`has just been listed for ${event.starting_price/(1e18)}\u039E`)
-              .setThumbnail(event.asset.image_url)
-              .addField("By", `[${event.seller.user?.username || event.seller.address.slice(0,8)}](https://etherscan.io/address/${event.seller.address})`, true)
-              .setTimestamp()
-              .setFooter('Usage: !kotjstats <Token ID>', 'https://lh3.googleusercontent.com/WXzAeH_YAXvO1JSStHhMGmVAZPPSseKtkNksZ87WZ9UUybFBzYDNV9hTBAoM7bvy16lMLan5YG0cBTHyWN1KfGAANAb0sV9Riyw-CQM=s130');
-            client.channels.fetch(process.env.DISCORD_LISTING_CHANNEL_ID)
-              .then(channel => {
-                channel.send(embedMsg);
-              })
-              .catch(console.error);
-          }
+        return res.json();
+      })
+      .then((metadata) => {
+        const embedMsg = new Discord.MessageEmbed()
+          .setColor('#0099ff')
+          .setAuthor('KotJ Sales', 'https://lh3.googleusercontent.com/WXzAeH_YAXvO1JSStHhMGmVAZPPSseKtkNksZ87WZ9UUybFBzYDNV9hTBAoM7bvy16lMLan5YG0cBTHyWN1KfGAANAb0sV9Riyw-CQM=s130', 'https://opensea.io/collection/the-king-of-the-jungle')
+          .setTitle(metadata.name)
+          .setURL(metadata.permalink)
+          .setDescription(metadata.description)
+          .setThumbnail(metadata.image_url)
+          .addField('--Owner--', metadata.owner.user?.username || metadata.owner.address.slice(0, 8))
+          .addField('--Attributes--', '\u200B')
+          .setImage(metadata.image_url)
+          .setTimestamp()
+          .setFooter('Usage: !kotjstats <Token ID>', 'https://lh3.googleusercontent.com/WXzAeH_YAXvO1JSStHhMGmVAZPPSseKtkNksZ87WZ9UUybFBzYDNV9hTBAoM7bvy16lMLan5YG0cBTHyWN1KfGAANAb0sV9Riyw-CQM=s130');
+        metadata.traits.forEach(function (trait) {
+          embedMsg.addField(trait.trait_type, `${trait.value} (${Number(trait.trait_count / metadata.collection.stats.count).toLocaleString(undefined, { style: 'percent', minimumFractionDigits: 2 })})`, true)
         });
-
-        offset += data.asset_events.length;
-      }
-      catch (error) {
-        console.error(error);
-        return;
-      }
-    }
-
-    lastTimestamp = newTimestamp;
-  }
+        message.channel.send(embedMsg);
+      })
+      .catch(error => message.channel.send(error.message));
+  },
 };
